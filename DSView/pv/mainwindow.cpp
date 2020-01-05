@@ -54,11 +54,15 @@
 #include "device/device.h"
 #include "device/file.h"
 
+#include "data/logicsnapshot.h"
+#include "data/dsosnapshot.h"
+#include "data/analogsnapshot.h"
+
 #include "dialogs/about.h"
 #include "dialogs/deviceoptions.h"
 #include "dialogs/storeprogress.h"
 #include "dialogs/waitingdialog.h"
-#include "dialogs/dsmessagebox.h"
+#include "dialogs/regionoptions.h"
 
 #include "toolbars/samplingbar.h"
 #include "toolbars/trigbar.h"
@@ -85,6 +89,7 @@
 #include <stdarg.h>
 #include <glib.h>
 #include <list>
+#include <libusb.h>
 
 using boost::shared_ptr;
 using boost::dynamic_pointer_cast;
@@ -98,7 +103,9 @@ MainWindow::MainWindow(DeviceManager &device_manager,
 	QWidget *parent) :
     QMainWindow(parent),
     _device_manager(device_manager),
-    _session(device_manager)
+    _session(device_manager),
+    _hot_detach(false),
+    _msg(NULL)
 {
 	setup_ui();
 	if (open_file_name) {
@@ -112,6 +119,7 @@ MainWindow::MainWindow(DeviceManager &device_manager,
 void MainWindow::setup_ui()
 {
 	setObjectName(QString::fromUtf8("MainWindow"));
+    setContentsMargins(0,0,0,0);
     layout()->setMargin(0);
     layout()->setSpacing(0);
 
@@ -124,9 +132,13 @@ void MainWindow::setup_ui()
 
 	// Setup the sampling bar
     _sampling_bar = new toolbars::SamplingBar(_session, this);
+    _sampling_bar->setObjectName("sampling_bar");
     _trig_bar = new toolbars::TrigBar(_session, this);
+    _trig_bar->setObjectName("trig_bar");
     _file_bar = new toolbars::FileBar(_session, this);
+    _file_bar->setObjectName("file_bar");
     _logo_bar = new toolbars::LogoBar(_session, this);
+    _logo_bar->setObjectName("logo_bar");
 
     connect(_trig_bar, SIGNAL(on_protocol(bool)), this,
             SLOT(on_protocol(bool)));
@@ -136,6 +148,8 @@ void MainWindow::setup_ui()
             SLOT(on_measure(bool)));
     connect(_trig_bar, SIGNAL(on_search(bool)), this,
             SLOT(on_search(bool)));
+    connect(_trig_bar, SIGNAL(setTheme(QString)), this,
+            SLOT(switchTheme(QString)));
     connect(_file_bar, SIGNAL(load_file(QString)), this,
             SLOT(load_file(QString)));
     connect(_file_bar, SIGNAL(on_save()), this,
@@ -148,9 +162,14 @@ void MainWindow::setup_ui()
             SLOT(load_session(QString)));
     connect(_file_bar, SIGNAL(store_session(QString)), this,
             SLOT(store_session(QString)));
+    connect(_logo_bar, SIGNAL(setLanguage(int)), this,
+            SLOT(switchLanguage(int)));
+    connect(_logo_bar, SIGNAL(openDoc()), this,
+            SLOT(openDoc()));
 
     // trigger dock
     _trigger_dock=new QDockWidget(tr("Trigger Setting..."),this);
+    _trigger_dock->setObjectName("trigger_dock");
     _trigger_dock->setFeatures(QDockWidget::DockWidgetMovable);
     _trigger_dock->setAllowedAreas(Qt::RightDockWidgetArea);
     _trigger_dock->setVisible(false);
@@ -158,6 +177,7 @@ void MainWindow::setup_ui()
     _trigger_dock->setWidget(_trigger_widget);
 
     _dso_trigger_dock=new QDockWidget(tr("Trigger Setting..."),this);
+    _dso_trigger_dock->setObjectName("dso_trigger_dock");
     _dso_trigger_dock->setFeatures(QDockWidget::DockWidgetMovable);
     _dso_trigger_dock->setAllowedAreas(Qt::RightDockWidgetArea);
     _dso_trigger_dock->setVisible(false);
@@ -183,6 +203,8 @@ void MainWindow::setup_ui()
         SLOT(timebase_changed()));
     connect(_sampling_bar, SIGNAL(show_calibration()), _view,
         SLOT(show_calibration()));
+    connect(_trig_bar, SIGNAL(show_lissajous(bool)), _view,
+        SLOT(show_lissajous(bool)));
     connect(_dso_trigger_widget, SIGNAL(set_trig_pos(int)), _view,
         SLOT(set_trig_pos(int)));
     connect(_view, SIGNAL(auto_trig(int)), _dso_trigger_widget,
@@ -198,6 +220,7 @@ void MainWindow::setup_ui()
 #ifdef ENABLE_DECODE
     // protocol dock
     _protocol_dock=new QDockWidget(tr("Protocol"),this);
+    _protocol_dock->setObjectName("protocol_dock");
     _protocol_dock->setFeatures(QDockWidget::DockWidgetMovable);
     _protocol_dock->setAllowedAreas(Qt::RightDockWidgetArea);
     _protocol_dock->setVisible(false);
@@ -210,6 +233,7 @@ void MainWindow::setup_ui()
 #endif
     // measure dock
     _measure_dock=new QDockWidget(tr("Measurement"),this);
+    _measure_dock->setObjectName("measure_dock");
     _measure_dock->setFeatures(QDockWidget::DockWidgetMovable);
     _measure_dock->setAllowedAreas(Qt::RightDockWidgetArea);
     _measure_dock->setVisible(false);
@@ -217,6 +241,7 @@ void MainWindow::setup_ui()
     _measure_dock->setWidget(_measure_widget);
     // search dock
     _search_dock=new QDockWidget(tr("Search..."), this);
+    _search_dock->setObjectName("search_dock");
     _search_dock->setFeatures(QDockWidget::NoDockWidgetFeatures);
     _search_dock->setTitleBarWidget(new QWidget(_search_dock));
     _search_dock->setAllowedAreas(Qt::BottomDockWidgetArea);
@@ -256,7 +281,7 @@ void MainWindow::setup_ui()
     connect(&_session, SIGNAL(update_capture()), _view,
             SLOT(update_hori_res()), Qt::DirectConnection);
 
-    connect(&_session, SIGNAL(cur_samplerate_changed()), _measure_widget,
+    connect(&_session, SIGNAL(cur_snap_samplerate_changed()), _measure_widget,
             SLOT(cursor_update()));
     connect(_view, SIGNAL(cursor_update()), _measure_widget,
             SLOT(cursor_update()));
@@ -265,8 +290,8 @@ void MainWindow::setup_ui()
     connect(_view, SIGNAL(cursor_moved()), _measure_widget,
             SLOT(reCalc()));
     connect(_view, SIGNAL(prgRate(int)), this, SIGNAL(prgRate(int)));
-    connect(_view, SIGNAL(update_device_list()),
-            this, SLOT(update_device_list()), Qt::DirectConnection);
+    connect(_view, SIGNAL(device_changed(bool)),
+            this, SLOT(device_changed(bool)), Qt::DirectConnection);
 
     // event filter
     _view->installEventFilter(this);
@@ -285,9 +310,34 @@ void MainWindow::setup_ui()
     // Populate the device list and select the initially selected device
     _session.set_default_device(boost::bind(&MainWindow::session_error, this,
                                             QString(tr("Set Default Device failed")), _1));
+
+    // defaut language
+    QSettings settings(QApplication::organizationName(), QApplication::applicationName());
+    QLocale locale;
+    settings.beginGroup("MainFrame");
+    switchLanguage(settings.value("language", locale.language()).toInt());
+    switchTheme(settings.value("style", "dark").toString());
+    settings.endGroup();
+
+    // UI initial
+    _measure_widget->add_dist_measure();
+
+    // update device
     update_device_list();
     _session.start_hotplug_proc(boost::bind(&MainWindow::session_error, this,
                                              QString(tr("Hotplug failed")), _1));
+
+    retranslateUi();
+}
+
+
+void MainWindow::retranslateUi()
+{
+    _trigger_dock->setWindowTitle(tr("Trigger Setting..."));
+    _dso_trigger_dock->setWindowTitle(tr("Trigger Setting..."));
+    _protocol_dock->setWindowTitle(tr("Protocol"));
+    _measure_dock->setWindowTitle(tr("Measurement"));
+    _search_dock->setWindowTitle(tr("Search..."));
 }
 
 void MainWindow::session_error(
@@ -302,6 +352,10 @@ void MainWindow::update_device_list()
 {
     assert(_sampling_bar);
 
+    if (_msg)
+        _msg->close();
+
+    switchLanguage(_language);
     _session.stop_capture();
     _view->reload();
     _trigger_widget->device_updated();
@@ -317,12 +371,6 @@ void MainWindow::update_device_list()
 
     shared_ptr<pv::device::File> file_dev;
     if((file_dev = dynamic_pointer_cast<pv::device::File>(selected_device))) {
-        #ifdef ENABLE_DECODE
-        // load decoders
-        StoreSession ss(_session);
-        ss.load_decoders(_protocol_widget, file_dev->get_decoders());
-        #endif
-
         // check version
         if (selected_device->dev_inst()->mode == LOGIC) {
             GVariant* gvar = selected_device->get_config(NULL, NULL, SR_CONF_FILE_VERSION);
@@ -337,6 +385,15 @@ void MainWindow::update_device_list()
                 }
             }
         }
+
+        #ifdef ENABLE_DECODE
+        // load decoders
+        StoreSession ss(_session);
+        ss.load_decoders(_protocol_widget, file_dev->get_decoders());
+        #endif
+
+        // load session
+        load_session_json(file_dev->get_session(), true);
 
         // load data
         const QString errorMessage(
@@ -355,22 +412,61 @@ void MainWindow::update_device_list()
         #endif
         if (dir.exists()) {
             QString str = dir.absolutePath() + "/";
+            QString lang_name = ".ses" + QString::number(_language);
             QString ses_name = str +
                                selected_device->name() +
                                QString::number(selected_device->dev_inst()->mode) +
-                               ".dsc";
+                               lang_name + ".dsc";
             load_session(ses_name);
         }
     } else {
         _file_bar->set_settings_en(false);
         _logo_bar->dsl_connected(false);
+        #ifdef Q_OS_LINUX
+            QDir dir(DS_RES_PATH);
+        #else
+            QDir dir(QCoreApplication::applicationDirPath());
+            assert(dir.cd("res"));
+        #endif
+        if (dir.exists()) {
+            QString str = dir.absolutePath() + "/";
+            QString ses_name = str +
+                               selected_device->name() +
+                               QString::number(selected_device->dev_inst()->mode) +
+                               ".dsc";
+            if (QFileInfo(ses_name).exists())
+                load_session(ses_name);
+        }
     }
     _sampling_bar->reload();
     _view->status_clear();
     _trigger_widget->init();
     _dso_trigger_widget->init();
 	_measure_widget->reload();
+
+    // USB device speed check
+    if (!selected_device->name().contains("virtual")) {
+        int usb_speed = LIBUSB_SPEED_HIGH;
+        GVariant *gvar = selected_device->get_config(NULL, NULL, SR_CONF_USB_SPEED);
+        if (gvar != NULL) {
+            usb_speed = g_variant_get_int32(gvar);
+            g_variant_unref(gvar);
+        }
+
+        bool usb30_support = false;
+        gvar = selected_device->get_config(NULL, NULL, SR_CONF_USB30_SUPPORT);
+        if (gvar != NULL) {
+            usb30_support = g_variant_get_boolean(gvar);
+            g_variant_unref(gvar);
+
+            if (usb30_support && usb_speed == LIBUSB_SPEED_HIGH)
+                show_session_error(tr("Speed limited"), tr("This is a super-speed usb device(USB 3.0). "
+                                                           "Plug it into a USB 2.0 port will seriously affect its performance."
+                                                           "Please replug it into a USB 3.0 port."));
+        }
+    }
 }
+
 
 void MainWindow::reload()
 {
@@ -400,11 +496,13 @@ void MainWindow::show_session_error(
 	const QString text, const QString info_text)
 {
     dialogs::DSMessageBox msg(this);
+    _msg = &msg;
     msg.mBox()->setText(text);
     msg.mBox()->setInformativeText(info_text);
     msg.mBox()->setStandardButtons(QMessageBox::Ok);
     msg.mBox()->setIcon(QMessageBox::Warning);
 	msg.exec();
+    _msg = NULL;
 }
 
 void MainWindow::device_attach()
@@ -441,7 +539,38 @@ void MainWindow::device_detach()
 
     session_save();
     _view->hide_calibration();
+    if (_session.get_device()->dev_inst()->mode != DSO &&
+        strncmp(_session.get_device()->name().toLocal8Bit(), "virtual", 7)) {
+        const boost::shared_ptr<data::Snapshot> logic_snapshot(_session.get_snapshot(SR_CHANNEL_LOGIC));
+        assert(logic_snapshot);
+        const boost::shared_ptr<data::Snapshot> analog_snapshot(_session.get_snapshot(SR_CHANNEL_ANALOG));
+        assert(analog_snapshot);
 
+        if (!logic_snapshot->empty() || !analog_snapshot->empty()) {
+            dialogs::DSMessageBox msg(this);
+            _msg = &msg;
+            msg.mBox()->setText(tr("Hardware Detached"));
+            msg.mBox()->setInformativeText(tr("Save captured data?"));
+            msg.mBox()->addButton(tr("Ok"), QMessageBox::AcceptRole);
+            msg.mBox()->addButton(tr("Cancel"), QMessageBox::RejectRole);
+            msg.mBox()->setIcon(QMessageBox::Warning);
+            if (msg.exec())
+                on_save();
+            _msg = NULL;
+        }
+    }
+
+    _hot_detach = true;
+    if (!_session.get_saving())
+        device_detach_post();
+}
+
+void MainWindow::device_detach_post()
+{
+    if (!_hot_detach)
+        return;
+
+    _hot_detach = false;
     struct sr_dev_driver **const drivers = sr_driver_list();
     struct sr_dev_driver **driver;
     for (driver = drivers; *driver; driver++)
@@ -450,6 +579,16 @@ void MainWindow::device_detach()
 
     _session.set_default_device(boost::bind(&MainWindow::session_error, this,
                                             QString(tr("Set Default Device failed")), _1));
+    update_device_list();
+}
+
+void MainWindow::device_changed(bool close)
+{
+    if (close) {
+        _sampling_bar->set_sampling(false);
+        _session.set_default_device(boost::bind(&MainWindow::session_error, this,
+                                                QString(tr("Set Default Device failed")), _1));
+    }
     update_device_list();
 }
 
@@ -601,16 +740,23 @@ void MainWindow::session_save()
         dir.cd(path);
         QString driver_name = _session.get_device()->name();
         QString mode_name = QString::number(_session.get_device()->dev_inst()->mode);
-        QString file_name = dir.absolutePath() + "/" + driver_name + mode_name + ".dsc";
+        QString lang_name = ".ses" + QString::number(_language);
+        QString file_name = dir.absolutePath() + "/" +
+                            driver_name + mode_name +
+                            lang_name + ".dsc";
         if (strncmp(driver_name.toLocal8Bit(), "virtual", 7) &&
             !file_name.isEmpty()) {
             store_session(file_name);
         }
     }
+
+    QSettings settings(QApplication::organizationName(), QApplication::applicationName());
+    settings.setValue("windowState", saveState());
 }
 
 void MainWindow::closeEvent(QCloseEvent *event)
 {
+    // not used, refer to closeEvent of mainFrame
     session_save();
     event->accept();
 }
@@ -640,7 +786,7 @@ void MainWindow::commit_trigger(bool instant)
 {
     int i = 0;
     const QString TRIG_KEY("WarnofMultiTrig");
-    QSettings settings;
+    QSettings settings(QApplication::organizationName(), QApplication::applicationName());
 
     ds_trigger_init();
 
@@ -703,7 +849,8 @@ void MainWindow::on_search(bool visible)
 void MainWindow::on_screenShot()
 {
     const QString DIR_KEY("ScreenShotPath");
-    QSettings settings;
+    QSettings settings(QApplication::organizationName(), QApplication::applicationName());
+    QString default_name = settings.value(DIR_KEY).toString() + "/DSView" + QDateTime::currentDateTime().toString("-yyMMdd-hhmmss");
     QPixmap pixmap;
     QDesktopWidget *desktop = QApplication::desktop();
     pixmap = QPixmap::grabWindow(desktop->winId(), parentWidget()->pos().x(), parentWidget()->pos().y(),
@@ -711,12 +858,12 @@ void MainWindow::on_screenShot()
     QString format = "png";
 
     QString fileName = QFileDialog::getSaveFileName(this,
-                       tr("Save As"),settings.value(DIR_KEY).toString(),
+                       tr("Save As"), default_name,
                        tr("%1 Files (*.%2);;All Files (*)")
                        .arg(format.toUpper()).arg(format));
     if (!fileName.isEmpty()) {
         QDir CurrentDir;
-        settings.setValue(DIR_KEY, CurrentDir.absoluteFilePath(fileName));
+        settings.setValue(DIR_KEY, CurrentDir.filePath(fileName));
         pixmap.save(fileName, format.toLatin1());
     }
 }
@@ -724,13 +871,37 @@ void MainWindow::on_screenShot()
 void MainWindow::on_save()
 {
     using pv::dialogs::StoreProgress;
+
+//    dialogs::RegionOptions *regionDlg = new dialogs::RegionOptions(_view, _session, this);
+//    regionDlg->exec();
+
+    _session.set_saving(true);
+    QString session_file;
+    QDir dir;
+    #if QT_VERSION >= 0x050400
+    QString path = QStandardPaths::writableLocation(QStandardPaths::AppDataLocation);
+    #else
+    QString path = QStandardPaths::writableLocation(QStandardPaths::DataLocation);
+    #endif
+    if(dir.mkpath(path)) {
+        dir.cd(path);
+
+        session_file = dir.absolutePath() + "/DSView-session-XXXXXX";
+        store_session(session_file);
+    }
+
     StoreProgress *dlg = new StoreProgress(_session, this);
-    dlg->save_run();
+    connect(dlg, SIGNAL(save_done()), this, SLOT(device_detach_post()));
+    dlg->save_run(session_file);
 }
 
 void MainWindow::on_export()
 {
     using pv::dialogs::StoreProgress;
+
+//    dialogs::RegionOptions *regionDlg = new dialogs::RegionOptions(_view, _session, this);
+//    regionDlg->exec();
+
     StoreProgress *dlg = new StoreProgress(_session, this);
     dlg->export_run();
 }
@@ -745,7 +916,13 @@ bool MainWindow::load_session(QString name)
 
     QString sessionData = QString::fromUtf8(sessionFile.readAll());
     QJsonDocument sessionDoc = QJsonDocument::fromJson(sessionData.toUtf8());
-    QJsonObject sessionObj = sessionDoc.object();
+
+    return load_session_json(sessionDoc, false);
+}
+
+bool MainWindow::load_session_json(QJsonDocument json, bool file_dev)
+{
+    QJsonObject sessionObj = json.object();
 
     // check session file version
     if (!sessionObj.contains("Version") ||
@@ -754,7 +931,7 @@ bool MainWindow::load_session(QString name)
 
     // check device and mode
     const sr_dev_inst *const sdi = _session.get_device()->dev_inst();
-    if (strcmp(sdi->driver->name, sessionObj["Device"].toString().toLocal8Bit()) != 0 ||
+    if ((!file_dev && strcmp(sdi->driver->name, sessionObj["Device"].toString().toLocal8Bit()) != 0) ||
         sdi->mode != sessionObj["DeviceMode"].toDouble()) {
         dialogs::DSMessageBox msg(this);
         msg.mBox()->setText(tr("Session Error"));
@@ -763,6 +940,20 @@ bool MainWindow::load_session(QString name)
         msg.mBox()->setIcon(QMessageBox::Warning);
         msg.exec();
         return false;
+    }
+
+    // check language
+    if (sessionObj.contains("Language")) {
+        switchLanguage(sessionObj["Language"].toInt());
+    } else if (sessionObj.contains("Operation Mode")) {
+        bool language_matched = _session.get_device()->set_config(NULL, NULL, SR_CONF_OPERATION_MODE,
+                                          g_variant_new_string(sessionObj["Operation Mode"].toString().toUtf8()));
+        if (!language_matched) {
+            if (_language != QLocale::Chinese)
+                switchLanguage(QLocale::Chinese);
+            else
+                switchLanguage(QLocale::English);
+        }
     }
 
     // clear decoders
@@ -842,14 +1033,14 @@ bool MainWindow::load_session(QString name)
                 boost::shared_ptr<view::DsoSignal> dsoSig;
                 if ((dsoSig = dynamic_pointer_cast<view::DsoSignal>(s))) {
                     dsoSig->load_settings();
-                    dsoSig->set_zero_vrate(obj["zeroPos"].toDouble(), true);
-                    dsoSig->set_trig_vrate(obj["trigValue"].toDouble());
+                    dsoSig->set_zero_ratio(obj["zeroPos"].toDouble());
+                    dsoSig->set_trig_ratio(obj["trigValue"].toDouble());
                     dsoSig->commit_settings();
                 }
 
                 boost::shared_ptr<view::AnalogSignal> analogSig;
                 if ((analogSig = dynamic_pointer_cast<view::AnalogSignal>(s))) {
-                    analogSig->set_zero_vrate(obj["zeroPos"].toDouble(), true);
+                    analogSig->set_zero_ratio(obj["zeroPos"].toDouble());
                     analogSig->commit_settings();
                 }
 
@@ -876,8 +1067,14 @@ bool MainWindow::load_session(QString name)
     }
     #endif
 
+    // load measure
+    if (sessionObj.contains("measure")) {
+        _view->get_viewstatus()->load_session(sessionObj["measure"].toArray());
+    }
+
     return true;
 }
+
 
 bool MainWindow::store_session(QString name)
 {
@@ -894,7 +1091,7 @@ bool MainWindow::store_session(QString name)
     }
     QTextStream outStream(&sessionFile);
     outStream.setCodec("UTF-8");
-    outStream.setGenerateByteOrderMark(true);
+    //outStream.setGenerateByteOrderMark(true); // UTF-8 without BOM
 
     GVariant *gvar_opts;
     GVariant *gvar;
@@ -905,6 +1102,7 @@ bool MainWindow::store_session(QString name)
     sessionVar["Version"]= QJsonValue::fromVariant(Session_Version);
     sessionVar["Device"] = QJsonValue::fromVariant(sdi->driver->name);
     sessionVar["DeviceMode"] = QJsonValue::fromVariant(sdi->mode);
+    sessionVar["Language"] = QJsonValue::fromVariant(_language);
 
     if ((sr_config_list(sdi->driver, sdi, NULL, SR_CONF_DEVICE_SESSIONS, &gvar_opts) != SR_OK))
         return false;   /* Driver supports no device instance sessions. */
@@ -935,7 +1133,10 @@ bool MainWindow::store_session(QString name)
         s_obj["type"] = s->get_type();
         s_obj["enabled"] = s->enabled();
         s_obj["name"] = s->get_name();
-        s_obj["colour"] = QJsonValue::fromVariant(s->get_colour());
+        if (s->get_colour().isValid())
+            s_obj["colour"] = QJsonValue::fromVariant(s->get_colour());
+        else
+            s_obj["colour"] = QJsonValue::fromVariant("default");
 
         boost::shared_ptr<view::LogicSignal> logicSig;
         if ((logicSig = dynamic_pointer_cast<view::LogicSignal>(s))) {
@@ -948,14 +1149,15 @@ bool MainWindow::store_session(QString name)
             s_obj["vfactor"] = QJsonValue::fromVariant(static_cast<qulonglong>(dsoSig->get_factor()));
             s_obj["coupling"] = dsoSig->get_acCoupling();
             s_obj["trigValue"] = dsoSig->get_trig_vrate();
-            s_obj["zeroPos"] = dsoSig->get_zero_vrate();
+            s_obj["zeroPos"] = dsoSig->get_zero_ratio();
         }
 
         boost::shared_ptr<view::AnalogSignal> analogSig;
         if ((analogSig = dynamic_pointer_cast<view::AnalogSignal>(s))) {
             s_obj["vdiv"] = QJsonValue::fromVariant(static_cast<qulonglong>(analogSig->get_vdiv()));
+            s_obj["vfactor"] = QJsonValue::fromVariant(static_cast<qulonglong>(analogSig->get_factor()));
             s_obj["coupling"] = analogSig->get_acCoupling();
-            s_obj["zeroPos"] = analogSig->get_zero_vrate();
+            s_obj["zeroPos"] = analogSig->get_zero_ratio();
             s_obj["mapUnit"] = analogSig->get_mapUnit();
             s_obj["mapMin"] = analogSig->get_mapMin();
             s_obj["mapMax"] = analogSig->get_mapMax();
@@ -973,11 +1175,37 @@ bool MainWindow::store_session(QString name)
     sessionVar["decoder"] = ss.json_decoders();
     #endif
 
+    if (_session.get_device()->dev_inst()->mode == DSO) {
+        sessionVar["measure"] = _view->get_viewstatus()->get_session();
+    }
+
     QJsonDocument sessionDoc(sessionVar);
     //sessionFile.write(QString::fromUtf8(sessionDoc.toJson()));
     outStream << QString::fromUtf8(sessionDoc.toJson());
     sessionFile.close();
     return true;
+}
+
+void MainWindow::restore_dock()
+{
+    // default dockwidget size
+    QSettings settings(QApplication::organizationName(), QApplication::applicationName());
+    restoreState(settings.value("windowState").toByteArray());
+    if (_session.get_device()->dev_inst()->mode != DSO) {
+        _dso_trigger_dock->setVisible(false);
+        _trig_bar->update_trig_btn(_trigger_dock->isVisible());
+    } else {
+        _trigger_dock->setVisible(false);
+        _trig_bar->update_trig_btn(_dso_trigger_dock->isVisible());
+    }
+    if (_session.get_device()->dev_inst()->mode != LOGIC) {
+#ifdef ENABLE_DECODE
+        on_protocol(false);
+#endif
+    }
+    _trig_bar->update_protocol_btn(_protocol_dock->isVisible());
+    _trig_bar->update_measure_btn(_measure_dock->isVisible());
+    _trig_bar->update_search_btn(_search_dock->isVisible());
 }
 
 bool MainWindow::eventFilter(QObject *object, QEvent *event)
@@ -1060,7 +1288,7 @@ bool MainWindow::eventFilter(QObject *object, QEvent *event)
                 shared_ptr<view::DsoSignal> dsoSig;
                 if ((dsoSig = dynamic_pointer_cast<view::DsoSignal>(s))) {
                     if (dsoSig->get_vDialActive()) {
-                        dsoSig->go_vDialNext();
+                        dsoSig->go_vDialNext(true);
                         update();
                         break;
                     }
@@ -1072,7 +1300,7 @@ bool MainWindow::eventFilter(QObject *object, QEvent *event)
                 shared_ptr<view::DsoSignal> dsoSig;
                 if ((dsoSig = dynamic_pointer_cast<view::DsoSignal>(s))) {
                     if (dsoSig->get_vDialActive()) {
-                        dsoSig->go_vDialPre();
+                        dsoSig->go_vDialPre(true);
                         update();
                         break;
                     }
@@ -1085,6 +1313,59 @@ bool MainWindow::eventFilter(QObject *object, QEvent *event)
         return true;
     }
     return false;
+}
+
+int MainWindow::language() const
+{
+    return _language;
+}
+
+void MainWindow::switchLanguage(int language)
+{
+    shared_ptr<pv::device::DevInst> dev = _session.get_device();
+    dev->set_config(NULL, NULL, SR_CONF_LANGUAGE, g_variant_new_int16(language));
+
+    if (_language != language) {
+        _language = language;
+        if (_language != QLocale::English) {
+            _qtTrans.load(":/qt_"+QString::number(_language));
+            qApp->installTranslator(&_qtTrans);
+            _myTrans.load(":/my_"+QString::number(_language));
+            qApp->installTranslator(&_myTrans);
+            retranslateUi();
+        } else {
+            qApp->removeTranslator(&_qtTrans);
+            qApp->removeTranslator(&_myTrans);
+            retranslateUi();
+        }
+        qApp->setProperty("Language", _language);
+    }
+}
+
+void MainWindow::switchTheme(QString style)
+{
+    if (_style != style) {
+        _style = style;
+        qApp->setProperty("Style", _style);
+        QString qssRes = ":/"+_style+".qss";
+        QFile qss(qssRes);
+        qss.open(QFile::ReadOnly | QFile::Text);
+        qApp->setStyleSheet(qss.readAll());
+        qss.close();
+        _session.data_updated();
+    }
+}
+
+void MainWindow::openDoc()
+{
+    #ifndef Q_OS_LINUX
+    QDir dir(QCoreApplication::applicationDirPath());
+    #else
+    QDir dir(DS_RES_PATH);
+    dir.cdUp();
+    #endif
+    QDesktopServices::openUrl(
+                QUrl("file:///"+dir.absolutePath() + "/ug"+QString::number(_language)+".pdf"));
 }
 
 } // namespace pv

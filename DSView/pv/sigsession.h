@@ -49,6 +49,9 @@
 #include <libsigrok4DSL/libsigrok.h>
 #include <libusb.h>
 
+#include "view/mathtrace.h"
+#include "data/mathstack.h"
+
 struct srd_decoder;
 struct srd_channel;
 
@@ -68,6 +71,7 @@ class LogicSnapshot;
 class Group;
 class GroupSnapshot;
 class DecoderModel;
+class MathStack;
 }
 
 namespace device {
@@ -78,6 +82,8 @@ namespace view {
 class Signal;
 class GroupSignal;
 class DecodeTrace;
+class SpectrumTrace;
+class LissajousTrace;
 class MathTrace;
 }
 
@@ -96,7 +102,7 @@ private:
     static const int RepeatHoldDiv = 20;
 
 public:
-    static const int ViewTime = 50;
+    static const int FeedInterval = 50;
     static const int WaitShowTime = 500;
 
 public:
@@ -131,11 +137,11 @@ public:
 	/**
 	 * Sets device instance that will be used in the next capture session.
 	 */
-    void set_device(boost::shared_ptr<device::DevInst> dev_inst)
-        throw(QString);
+    void set_device(boost::shared_ptr<device::DevInst> dev_inst);
 
-    void set_file(QString name)
-        throw(QString);
+    void set_file(QString name);
+
+    void close_file(boost::shared_ptr<pv::device::DevInst> dev_inst);
 
     void set_default_device(boost::function<void (const QString)> error_handler);
 
@@ -144,11 +150,16 @@ public:
 	capture_state get_capture_state() const;
 
     uint64_t cur_samplerate() const;
+    uint64_t cur_snap_samplerate() const;
     uint64_t cur_samplelimits() const;
     double cur_sampletime() const;
-    void set_cur_samplerate(uint64_t samplerate);
+    double cur_snap_sampletime() const;
+    double cur_view_time() const;
+
+    void set_cur_snap_samplerate(uint64_t samplerate);
     void set_cur_samplelimits(uint64_t samplelimits);
-    QDateTime get_trigger_time() const;
+    void set_session_time(QDateTime time);
+    QDateTime get_session_time() const;
     uint64_t get_trigger_pos() const;
 
     void start_capture(bool instant,
@@ -182,8 +193,14 @@ public:
     pv::data::DecoderModel* get_decoder_model() const;
 #endif
 
-    std::vector< boost::shared_ptr<view::MathTrace> >
-        get_math_signals();
+    std::vector< boost::shared_ptr<view::SpectrumTrace> >
+        get_spectrum_traces();
+
+    boost::shared_ptr<view::LissajousTrace>
+        get_lissajous_trace();
+
+    boost::shared_ptr<view::MathTrace>
+        get_math_trace();
 
     void init_signals();
 
@@ -204,7 +221,14 @@ public:
     void data_auto_lock(int lock);
     void data_auto_unlock();
     bool get_data_auto_lock();
-    void mathTraces_rebuild();
+    void spectrum_rebuild();
+    void lissajous_rebuild(bool enable, int xindex, int yindex, double percent);
+    void lissajous_disable();
+    void math_rebuild(bool enable,
+                      boost::shared_ptr<pv::view::DsoSignal> dsoSig1,
+                      boost::shared_ptr<pv::view::DsoSignal> dsoSig2,
+                      data::MathStack::MathType type);
+    void math_disable();
 
     bool trigd() const;
 
@@ -224,6 +248,13 @@ public:
     int get_repeat_hold() const;
 
     int get_map_zoom() const;
+
+    void set_save_start(uint64_t start);
+    void set_save_end(uint64_t end);
+    uint64_t get_save_start() const;
+    uint64_t get_save_end() const;
+    bool get_saving() const;
+    void set_saving(bool saving);
 
 private:
 	void set_capture_state(capture_state state);
@@ -276,7 +307,7 @@ private:
     mutable boost::mutex _sampling_mutex;
 	capture_state _capture_state;
     bool _instant;
-    uint64_t _cur_samplerate;
+    uint64_t _cur_snap_samplerate;
     uint64_t _cur_samplelimits;
 
     //mutable boost::mutex _signals_mutex;
@@ -286,7 +317,9 @@ private:
     std::vector< boost::shared_ptr<view::DecodeTrace> > _decode_traces;
     pv::data::DecoderModel *_decoder_model;
 #endif
-    std::vector< boost::shared_ptr<view::MathTrace> > _math_traces;
+    std::vector< boost::shared_ptr<view::SpectrumTrace> > _spectrum_traces;
+    boost::shared_ptr<view::LissajousTrace> _lissajous_trace;
+    boost::shared_ptr<view::MathTrace> _math_trace;
 
     mutable boost::mutex _data_mutex;
 	boost::shared_ptr<data::Logic> _logic_data;
@@ -306,13 +339,13 @@ private:
     bool _hot_attach;
     bool _hot_detach;
 
-    QTimer _view_timer;
+    QTimer _feed_timer;
     int    _noData_cnt;
     bool _data_lock;
     bool _data_updated;
     int _data_auto_lock;
 
-    QDateTime _trigger_time;
+    QDateTime _session_time;
     uint64_t _trigger_pos;
     bool _trigger_flag;
     bool _hw_replied;
@@ -326,6 +359,12 @@ private:
     int _repeat_hold_prg;
 
     int _map_zoom;
+
+    uint64_t _save_start;
+    uint64_t _save_end;
+    bool _saving;
+
+    bool _dso_feed;
 
 signals:
 	void capture_state_changed(int state);
@@ -369,7 +408,7 @@ signals:
     void repeat_hold(int percent);
     void repeat_resume();
 
-    void cur_samplerate_changed();
+    void cur_snap_samplerate_changed();
 
     void update_capture();
 
@@ -377,14 +416,16 @@ public slots:
     void reload();
     void refresh(int holdtime);
     void stop_capture();
+    void check_update();
     // repeat
     void set_repeating(bool repeat);
     void set_map_zoom(int index);
+    // OSC auto
+    void auto_end();
 
 private slots:
     void data_lock();
     void data_unlock();
-    void check_update();
     void nodata_timeout();
     void repeat_update();
 

@@ -15,6 +15,7 @@ CPackSourceConfig.cmake
 cmake_install.cmake
 Makefile
 *.cxx
+version.h
 config.guess
 config.h
 config.h.in
@@ -38,11 +39,11 @@ DSView/DSView
 DSView/install_manifest.txt
 DSView/qrc_DSView.cpp
 DSView/qrc_style.cpp
+DSView/qrc_breeze.cpp
+DSView/qrc_language.cpp
 
 moc_*.cpp
 moc_*.cpp_parameters
-
-libsigrok4DSL/version.h
 
 DSView-prj
 build*

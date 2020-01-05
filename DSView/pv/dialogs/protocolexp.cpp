@@ -23,6 +23,7 @@
 
 #include <boost/foreach.hpp>
 
+#include <QApplication>
 #include <QFormLayout>
 #include <QListWidget>
 #include <QFile>
@@ -118,10 +119,14 @@ void ProtocolExp::accept()
                 filter.append(";;");
         }
         const QString DIR_KEY("ProtocolExportPath");
-        QSettings settings;
+        QSettings settings(QApplication::organizationName(), QApplication::applicationName());
         QString default_filter = _format_combobox->currentText();
+
+        QString default_name = settings.value(DIR_KEY).toString() + "/" + "decoder-";
+        default_name += _session.get_session_time().toString("-yyMMdd-hhmmss");
+
         QString file_name = QFileDialog::getSaveFileName(
-                    this, tr("Export Data"), settings.value(DIR_KEY).toString(),filter,&default_filter);
+                    this, tr("Export Data"), default_name,filter,&default_filter);
         if (!file_name.isEmpty()) {
             QFileInfo f(file_name);
             QStringList list = default_filter.split('.').last().split(')');
@@ -130,13 +135,13 @@ void ProtocolExp::accept()
                 file_name+=tr(".")+ext;
 
             QDir CurrentDir;
-            settings.setValue(DIR_KEY, CurrentDir.absoluteFilePath(file_name));
+            settings.setValue(DIR_KEY, CurrentDir.filePath(file_name));
 
             QFile file(file_name);
             file.open(QIODevice::WriteOnly | QIODevice::Text);
             QTextStream out(&file);
             out.setCodec("UTF-8");
-            out.setGenerateByteOrderMark(true);
+            //out.setGenerateByteOrderMark(true); // UTF-8 without BOM
 
             QFuture<void> future;
             future = QtConcurrent::run([&]{
@@ -152,7 +157,7 @@ void ProtocolExp::accept()
                     }
                 }
                 out << QString("%1,%2,%3\n")
-                       .arg("ID")
+                       .arg("Id")
                        .arg("Time[s]")
                        .arg(title);
 

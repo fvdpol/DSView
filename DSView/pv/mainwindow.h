@@ -29,6 +29,7 @@
 #include <QMainWindow>
 
 #include "sigsession.h"
+#include "dialogs/dsmessagebox.h"
 
 class QAction;
 class QMenuBar;
@@ -79,13 +80,19 @@ protected:
 
 private:
 	void setup_ui();
-
+    void retranslateUi();
 	void session_error(const QString text, const QString info_text);
-
     bool eventFilter(QObject *object, QEvent *event);
 
 public slots:
     void session_save();
+    int language() const;
+    void openDoc();
+
+    void switchLanguage(int language);
+    void switchTheme(QString style);
+
+    void restore_dock();
 
 private slots:
 	void load_file(QString file_name);
@@ -100,7 +107,7 @@ private slots:
 
     void reload();
 
-	void show_session_error(
+    void show_session_error(
 		const QString text, const QString info_text);
 
 	void run_stop();
@@ -126,6 +133,7 @@ private slots:
     void on_export();
 
     bool load_session(QString name);
+    bool load_session_json(QJsonDocument json, bool file_dev);
     bool store_session(QString name);
 
     /*
@@ -138,11 +146,14 @@ private slots:
      */
     void device_attach();
     void device_detach();
+    void device_detach_post();
+    void device_changed(bool close);
 
     /*
      * errors
      */
     void show_error();
+
 signals:
     void prgRate(int progress);
 
@@ -150,8 +161,10 @@ private:
 	DeviceManager &_device_manager;
 
 	SigSession _session;
+    bool _hot_detach;
 
 	pv::view::View *_view;
+    dialogs::DSMessageBox *_msg;
 
 	QMenuBar *_menu_bar;
 	QMenu *_menu_file;
@@ -188,6 +201,11 @@ private:
     dock::MeasureDock *_measure_widget;
     QDockWidget *_search_dock;
     dock::SearchDock * _search_widget;
+
+    int _language;
+    QString _style;
+    QTranslator _qtTrans;
+    QTranslator _myTrans;
 };
 
 } // namespace pv

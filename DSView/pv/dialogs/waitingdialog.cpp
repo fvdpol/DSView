@@ -31,6 +31,7 @@
 #include <QVBoxLayout>
 
 #include "../view/trace.h"
+#include "../view/dsosignal.h"
 
 using namespace boost;
 using namespace std;
@@ -38,28 +39,37 @@ using namespace std;
 namespace pv {
 namespace dialogs {
 
-const QString WaitingDialog::TIPS_WAIT = QT_TR_NOOP("Waiting");
-const QString WaitingDialog::TIPS_FINISHED = QT_TR_NOOP("Finished!");
+const QString WaitingDialog::TIPS_WAIT = "Waiting";
+const QString WaitingDialog::TIPS_FINISHED = "Finished!";
 
-WaitingDialog::WaitingDialog(QWidget *parent, boost::shared_ptr<pv::device::DevInst> dev_inst) :
+WaitingDialog::WaitingDialog(QWidget *parent, SigSession &session, int key) :
     DSDialog(parent),
-    _dev_inst(dev_inst),
+    _key(key),
+    _session(session),
     _button_box(QDialogButtonBox::Abort,
         Qt::Horizontal, this)
 {
-    this->setFixedSize((GIF_WIDTH+TIP_WIDTH)*1.2, (GIF_HEIGHT+TIP_HEIGHT)*4);
+    _dev_inst = _session.get_device();
+    this->setFixedSize((GIF_WIDTH+2*TIP_WIDTH)*1.2, (GIF_HEIGHT+2*TIP_HEIGHT)*4);
     this->setWindowOpacity(0.7);
 
+    QFont font;
+    font.setPointSize(10);
+    font.setBold(true);
+
+    QLabel *warning_tips = new QLabel(this);
+    warning_tips->setText(tr("Don't connect any probes!"));
+    warning_tips->setFont(font);
+    warning_tips->setAlignment(Qt::AlignCenter);
+
+    QString iconPath = ":/icons/" + qApp->property("Style").toString();
     label = new QLabel(this);
-    movie = new QMovie(":/icons/wait.gif");
+    movie = new QMovie(iconPath+"/wait.gif");
     label->setMovie(movie);
     label->setAlignment(Qt::AlignCenter);
 
     tips = new QLabel(this);
-    tips->setText(TIPS_WAIT);
-    QFont font;
-    font.setPointSize(10);
-    font.setBold(true);
+    tips->setText(tr("Waiting"));
     tips->setFont(font);
     tips->setAlignment(Qt::AlignCenter);
 
@@ -72,6 +82,7 @@ WaitingDialog::WaitingDialog(QWidget *parent, boost::shared_ptr<pv::device::DevI
 
 
     QVBoxLayout *mlayout = new QVBoxLayout();
+    mlayout->addWidget(warning_tips, Qt::AlignHCenter);
     mlayout->addWidget(label, Qt::AlignHCenter);
     mlayout->addWidget(tips, Qt::AlignHCenter);
     mlayout->addWidget(&_button_box);
@@ -89,13 +100,11 @@ void WaitingDialog::accept()
 
     QFuture<void> future;
     future = QtConcurrent::run([&]{
-        //QTime dieTime = QTime::currentTime().addSecs(1);
         _dev_inst->set_config(NULL, NULL, SR_CONF_ZERO_SET,
                               g_variant_new_boolean(true));
-        //while( QTime::currentTime() < dieTime );
     });
     Qt::WindowFlags flags = Qt::CustomizeWindowHint;
-    QProgressDialog dlg(tr("Save Auto Zero Result... It can take a while."),
+    QProgressDialog dlg(tr("Save calibration Result... It can take a while."),
                         tr("Cancel"),0,0,this,flags);
     dlg.setWindowModality(Qt::WindowModal);
     dlg.setWindowFlags(Qt::Dialog | Qt::FramelessWindowHint | Qt::WindowSystemMenuHint |
@@ -103,8 +112,8 @@ void WaitingDialog::accept()
     dlg.setCancelButton(NULL);
 
     QFutureWatcher<void> watcher;
-    watcher.setFuture(future);
     connect(&watcher,SIGNAL(finished()),&dlg,SLOT(cancel()));
+    watcher.setFuture(future);
 
     dlg.exec();
 }
@@ -119,14 +128,12 @@ void WaitingDialog::reject()
 
     QFuture<void> future;
     future = QtConcurrent::run([&]{
-        //QTime dieTime = QTime::currentTime().addSecs(1);
-        _dev_inst->set_config(NULL, NULL, SR_CONF_ZERO, g_variant_new_boolean(false));
+        _dev_inst->set_config(NULL, NULL, _key, g_variant_new_boolean(false));
         _dev_inst->set_config(NULL, NULL, SR_CONF_ZERO_LOAD,
                               g_variant_new_boolean(true));
-        //while( QTime::currentTime() < dieTime );
     });
     Qt::WindowFlags flags = Qt::CustomizeWindowHint;
-    QProgressDialog dlg(tr("Load Current Setting... It can take a while."),
+    QProgressDialog dlg(tr("Load current setting... It can take a while."),
                         tr("Cancel"),0,0,this,flags);
     dlg.setWindowModality(Qt::WindowModal);
     dlg.setWindowFlags(Qt::Dialog | Qt::FramelessWindowHint | Qt::WindowSystemMenuHint |
@@ -161,10 +168,10 @@ void WaitingDialog::changeText()
     index++;
     if(index == WPOINTS_NUM + 1)
     {
-        tips->setText(TIPS_WAIT);
+        tips->setText(tr("Waiting"));
         index = 0;
 
-        GVariant* gvar = _dev_inst->get_config(NULL, NULL, SR_CONF_ZERO);
+        GVariant* gvar = _dev_inst->get_config(NULL, NULL, _key);
         if (gvar != NULL) {
             bool zero = g_variant_get_boolean(gvar);
             g_variant_unref(gvar);
@@ -173,7 +180,7 @@ void WaitingDialog::changeText()
                 movie->jumpToFrame(0);
                 timer->stop();
                 tips->setAlignment(Qt::AlignHCenter);
-                tips->setText(TIPS_FINISHED);
+                tips->setText(tr("Finished!"));
                 _button_box.addButton(QDialogButtonBox::Save);
             }
         }

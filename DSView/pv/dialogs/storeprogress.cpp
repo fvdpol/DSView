@@ -21,6 +21,7 @@
 
 #include "storeprogress.h"
 #include "dsmessagebox.h"
+#include "pv/sigsession.h"
 
 #include "QVBoxLayout"
 
@@ -59,31 +60,35 @@ void StoreProgress::reject()
 {
     using namespace Qt;
     _store_session.cancel();
+    save_done();
     QDialog::reject();
 }
 
 void StoreProgress::timeout()
 {
-    if (_done)
+    if (_done) {
+        _store_session.session().set_saving(false);
+        save_done();
         close();
-    else
+    } else {
         QTimer::singleShot(100, this, SLOT(timeout()));
+    }
 }
 
-void StoreProgress::save_run()
+void StoreProgress::save_run(QString session_file)
 {
-    _info.setText("Saving...");
-    if (_store_session.save_start())
+    _info.setText(tr("Saving..."));
+    if (_store_session.save_start(session_file))
         show();
     else
-		show_error();
+        show_error();
 
     QTimer::singleShot(100, this, SLOT(timeout()));
 }
 
 void StoreProgress::export_run()
 {
-    _info.setText("Exporting...");
+    _info.setText(tr("Exporting..."));
     if (_store_session.export_start())
         show();
     else

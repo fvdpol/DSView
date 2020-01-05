@@ -163,16 +163,20 @@ void DsoSnapshot::append_payload(const sr_datafeed_dso &dso)
         append_data(dso.data, dso.num_samples, _instant);
 
         // Generate the first mip-map from the data
+        //if (_envelope_en)
+        //    append_payload_to_envelope_levels(dso.samplerate_tog);
         if (_envelope_en)
-            append_payload_to_envelope_levels(dso.samplerate_tog);
+            append_payload_to_envelope_levels(true);
     }
 }
 
 void DsoSnapshot::append_data(void *data, uint64_t samples, bool instant)
 {
     if (instant) {
+        if(_sample_count + samples > _total_sample_count)
+            samples = _total_sample_count - _sample_count;
         memcpy((uint8_t*)_data + _sample_count * _channel_num, data, samples*_channel_num);
-        _sample_count = (_sample_count + samples) % (_total_sample_count + 1);
+        _sample_count += samples;
     } else {
         memcpy((uint8_t*)_data, data, samples*_channel_num);
         _sample_count = samples;
@@ -191,6 +195,7 @@ void DsoSnapshot::enable_envelope(bool enable)
 const uint8_t *DsoSnapshot::get_samples(
     int64_t start_sample, int64_t end_sample, uint16_t index) const
 {
+    boost::lock_guard<boost::recursive_mutex> lock(_mutex);
     (void)end_sample;
 
 	assert(start_sample >= 0);
@@ -304,12 +309,17 @@ void DsoSnapshot::append_payload_to_envelope_levels(bool header)
             const Envelope &el = _envelope_levels[i][level-1];
 
             // Expand the data buffer to fit the new samples
-            prev_length = e.length;
+            if (header)
+                prev_length = 0;
+            else
+                prev_length = e.length;
             e.length = el.length / EnvelopeScaleFactor;
 
             // Break off if there are no more samples to computed
     //		if (e.length == prev_length)
     //			break;
+            if (e.length == 0)
+                break;
             if (e.length == prev_length)
                 prev_length = 0;
 

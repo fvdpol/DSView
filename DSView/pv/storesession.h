@@ -56,11 +56,13 @@ public:
 
 	~StoreSession();
 
+    SigSession& session();
+
 	std::pair<uint64_t, uint64_t> progress() const;
 
 	const QString& error() const;
 
-    bool save_start();
+    bool save_start(QString session_file);
 
     bool export_start();
 
@@ -84,7 +86,7 @@ public:
 
 private:
     QList<QString> getSuportedExportFormats();
-    double get_double(GVariant * var);
+    double get_integer(GVariant * var);
 
 signals:
 	void progress_updated();
@@ -103,6 +105,7 @@ private:
 	uint64_t _unit_count;
     bool _has_error;
 	QString _error;
+    bool _canceled;
 };
 
 } // pv

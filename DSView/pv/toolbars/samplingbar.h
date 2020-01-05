@@ -23,6 +23,8 @@
 #ifndef DSVIEW_PV_TOOLBARS_SAMPLINGBAR_H
 #define DSVIEW_PV_TOOLBARS_SAMPLINGBAR_H
 
+#include "../sigsession.h"
+
 #include <stdint.h>
 #include <list>
 #include <map>
@@ -34,8 +36,6 @@
 #include <QToolButton>
 #include <QAction>
 #include <QMenu>
-
-#include "../sigsession.h"
 
 struct st_dev_inst;
 class QAction;
@@ -61,12 +61,13 @@ class SamplingBar : public QToolBar
 
 private:
     static const int ComboBoxMaxWidth = 200;
-    static const int RefreshShort = 200;
+    static const int RefreshShort = 500;
     static const uint64_t LogicMaxSWDepth64 = SR_GB(16);
     static const uint64_t LogicMaxSWDepth32 = SR_GB(8);
     static const uint64_t AnalogMaxSWDepth = SR_Mn(100);
     static const QString RLEString;
     static const QString DIVString;
+    static const uint64_t ZeroTimeBase = SR_US(2);
 
 public:
     SamplingBar(SigSession &session, QWidget *parent);
@@ -105,6 +106,10 @@ signals:
     void hide_calibration();
 
 private:
+    void changeEvent(QEvent *event);
+    void retranslateUi();
+    void reStyle();
+
 	void update_sample_rate_selector_value();
     void update_sample_count_selector();
     void update_sample_count_selector_value();
@@ -134,6 +139,8 @@ private:
     bool _enable;
     bool _sampling;
 
+    QToolButton _device_type;
+
     QComboBox _device_selector;
     std::map<const void*, boost::weak_ptr<device::DevInst> >
         _device_selector_map;
@@ -146,11 +153,6 @@ private:
     bool _updating_sample_rate;
     bool _updating_sample_count;
 
-    QIcon _icon_stop;
-    QIcon _icon_start;
-    QIcon _icon_instant;
-    QIcon _icon_start_dis;
-    QIcon _icon_instant_dis;
 	QToolButton _run_stop_button;
     QToolButton _instant_button;
     QAction* _run_stop_action;
@@ -161,11 +163,6 @@ private:
     QMenu *_mode_menu;
     QAction *_action_repeat;
     QAction *_action_single;
-
-    QIcon _icon_repeat;
-    QIcon _icon_single;
-    QIcon _icon_repeat_dis;
-    QIcon _icon_single_dis;
 
     bool _instant;
 };
